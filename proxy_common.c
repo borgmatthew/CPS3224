@@ -7,8 +7,13 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
-
+#include <fcntl.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/epoll.h>
 #include "proxy_common.h"
+
+#define CONNECTION_BACKLOG 1000
 
 static const char * const MISSING_REQUIRED_ARGUMENTS = "Missing required arguments!";
 static const char * const INVALID_LISTEN_PORT = "Invalid listening port!";
@@ -95,4 +100,31 @@ const char * parse_cmd_options(int argc, char * argv[], proxy_params * pp)
 	return error;
 }
 
+int tcp_listen(int port)
+{
+	struct sockaddr_in listen_addr;
+
+	int listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+
+	memset(&listen_addr, '\0', sizeof(listen_addr));
+	listen_addr.sin_family = AF_INET;
+	listen_addr.sin_port = htons(port);
+	listen_addr.sin_addr.s_addr = INADDR_ANY;
+	bind(listen_fd, (struct sockaddr *) &listen_addr, sizeof(listen_addr));
+	listen(listen_fd, CONNECTION_BACKLOG);
+	return listen_fd;
+}
+
+int epoll_add(int epollfd, int srcfd, int dstfd)
+{
+	struct epoll_event ev;
+
+	memset(&ev, '\0', sizeof(ev));
+	ev.events = EPOLLIN | EPOLLRDHUP;
+	ev.data.ptr = malloc(sizeof(ep_data));
+	((ep_data *) ev.data.ptr)->src_fd = srcfd;
+	((ep_data *) ev.data.ptr)->dst_fd = dstfd;
+	epoll_ctl(epollfd, EPOLL_CTL_ADD, srcfd, &ev);
+	return 0;
+}
 #endif /* proxy_common.c */

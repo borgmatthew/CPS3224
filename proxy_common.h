@@ -30,4 +30,10 @@ void print_help(char const * prog_name);
  */
 const char * parse_cmd_options(int argc, char * argv[], proxy_params * pp);
 
+/*
+ * Listens on the specified port on all local addresses.
+ */
+int tcp_listen(int port);
+
+int epoll_add(int epoll_fd, int src_port, int dst_port);
 #endif /* proxy_common.h */

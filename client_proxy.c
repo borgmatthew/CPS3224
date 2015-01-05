@@ -15,21 +15,19 @@
 #include "proxy_common.h"
 #include "connection_common.h"
 
-static const int CONNECTION_BACKLOG = 1000;
 static const int MAX_EVENTS = 10;
 static const int MAX_BUFFER = 2 * 1024;
 
 int main(int argc, char * argv[]) {
 	int listen_fd = -1;
 	proxy_params pp;
-	struct sockaddr_in listen_addr, client_addr;
+	struct sockaddr_in client_addr;
 	socklen_t client_addr_len;
-
-
-	struct epoll_event ev, events[MAX_EVENTS];
+	struct epoll_event events[MAX_EVENTS];
 	int epollfd = -1;
 
-	/** Get params **/
+
+	/************************** Get Params *******************************/
 
 	const char * parse_error = parse_cmd_options(argc, argv, &pp);
 	if(parse_error != NULL) {
@@ -38,34 +36,17 @@ int main(int argc, char * argv[]) {
 		exit(-1);
 	}
 
-	printf("%d, %s, %d, %d\n",pp.listen_port, pp.connect_host, pp.connect_port, pp.tls_enabled);
+	printf("listen_port: [%d], connect_host: [%s], connect_port: [%d], tls_enabled: [%d]\n",
+		pp.listen_port, pp.connect_host, pp.connect_port, pp.tls_enabled);
 
-	/** Init **/
+	/******************************* Init ********************************/
 
 	/* for backwards compatibility with gnutls < 3.3.0 */
 	gnutls_global_init();
 
 	epollfd = epoll_create(MAX_EVENTS);
-
-
-	/** Setup Ports **/
-	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-	memset(&listen_addr, '\0', sizeof(listen_addr));
-	listen_addr.sin_family = AF_INET;
-	listen_addr.sin_port = htons(pp.listen_port);
-	listen_addr.sin_addr.s_addr = INADDR_ANY;
-	bind(listen_fd, (struct sockaddr *) &listen_addr, sizeof(listen_addr));
-	listen(listen_fd, CONNECTION_BACKLOG);
-
-
-	memset(&ev, '\0', sizeof(ev));
-	ev.events = EPOLLIN;
-	ev.data.ptr = malloc(sizeof(ep_data));
-	((ep_data *) ev.data.ptr)->src_fd = listen_fd;
-	((ep_data *) ev.data.ptr)->dst_fd = 0;
-	epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_fd, &ev);
-
+	listen_fd = tcp_listen(pp.listen_port);
+	epoll_add(epollfd, listen_fd, 0);
 
 	for (;;) {
 		int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
@@ -81,14 +62,16 @@ int main(int argc, char * argv[]) {
 				int x=fcntl(conn_sock,F_GETFL,0);
 				/* set non blocking */
 				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK); 
-				memset(&ev, '\0', sizeof(ev));
-				ev.events = EPOLLIN;
-				ev.data.ptr = malloc(sizeof(ep_data));
-				((ep_data *) ev.data.ptr)->src_fd = conn_sock;
-				((ep_data *) ev.data.ptr)->dst_fd = tcp_connect(pp.connect_host, pp.connect_port);
-				fcntl(((ep_data *) ev.data.ptr)->dst_fd,F_SETFL,x | O_NONBLOCK); 
-				printf("src connection fd: %d, dest connection fd: %d\n", ((ep_data *) ev.data.ptr)->src_fd, ((ep_data *) ev.data.ptr)->dst_fd);
-				epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,&ev);
+
+				int dstfd = tcp_connect(pp.connect_host, pp.connect_port);
+				if(dstfd > 0) {
+					fcntl(dstfd,F_SETFL,x | O_NONBLOCK);
+					epoll_add(epollfd, conn_sock, dstfd);
+					epoll_add(epollfd, dstfd, conn_sock);
+					printf("src connection fd: %d, dest connection fd: %d\n", conn_sock, dstfd);
+				} else {
+					close(conn_sock);
+				}
 			} else {
 				char message[MAX_BUFFER];
 				bzero(message, MAX_BUFFER);
@@ -109,11 +92,10 @@ int main(int argc, char * argv[]) {
 					free(ev_data);
 				} else {
 					printf("Got [%d] bytes from %d to %d\n",rec_length,ev_data->src_fd, ev_data->dst_fd);
+					/** encrypt and send **/
 					send(ev_data->dst_fd, message, rec_length, 0);
 				}
 			}
 		}
 	}
-
-	/** encrypt and send **/
 }

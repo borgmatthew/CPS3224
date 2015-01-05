@@ -24,7 +24,7 @@ int tcp_connect(const char *connect_host, uint16_t connect_port)
         err = connect(sd, (struct sockaddr *) &sa, sizeof(sa));
         if (err < 0) {
                 fprintf(stderr, "Connect error\n");
-                exit(1);
+		sd = -1;
         }
 
         return sd;
