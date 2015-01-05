@@ -9,6 +9,10 @@ typedef struct proxy_params {
 	uint8_t tls_enabled;
 } proxy_params;
 
+typedef struct ep_data {
+	int src_fd;
+	int dst_fd;
+} ep_data;
 
 /*****************************************************************************/
 /*                        Common function definitions                        */

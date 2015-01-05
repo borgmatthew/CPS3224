@@ -59,8 +59,11 @@ int main(int argc, char * argv[]) {
 	listen(listen_fd, CONNECTION_BACKLOG);
 
 
+	memset(&ev, '\0', sizeof(ev));
 	ev.events = EPOLLIN;
-	ev.data.fd = listen_fd;
+	ev.data.ptr = malloc(sizeof(ep_data));
+	((ep_data *) ev.data.ptr)->src_fd = listen_fd;
+	((ep_data *) ev.data.ptr)->dst_fd = 0;
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_fd, &ev);
 
 	/** Process Connections **/
@@ -73,33 +76,38 @@ int main(int argc, char * argv[]) {
 		int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
 
 		for (int n = 0; n < nfds; ++n) {
-			if (events[n].data.fd == listen_fd) {
+			ep_data * ev_data = events[n].data.ptr;
+			printf("Epoll[%d] triggering fd %d\n", n, events[n].data.fd);
+			if (ev_data->src_fd == listen_fd) {
+				printf("Got new connection\n");
 				client_addr_len = sizeof(client_addr);
 				memset(&client_addr, '\0', client_addr_len );
 				int conn_sock = accept(listen_fd, (struct sockaddr *) &client_addr, &client_addr_len);
 				int x=fcntl(conn_sock,F_GETFL,0);
-				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK);
-				//setnonblocking(conn_sock);
+				/* set non blocking */
+				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK); 
+				memset(&ev, '\0', sizeof(ev));
 				ev.events = EPOLLIN;
-				ev.data.fd = conn_sock;
+				ev.data.ptr = malloc(sizeof(ep_data));
+				((ep_data *) ev.data.ptr)->src_fd = conn_sock;
+				((ep_data *) ev.data.ptr)->dst_fd = tcp_connect(pp.connect_host, pp.connect_port);
+				fcntl(((ep_data *) ev.data.ptr)->dst_fd,F_SETFL,x | O_NONBLOCK); 
+				printf("src connection fd: %d, dest connection fd: %d\n", ((ep_data *) ev.data.ptr)->src_fd, ((ep_data *) ev.data.ptr)->dst_fd);
 				epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,&ev);
-
-				// Open destination connection
-				events[n].data.u32 = tcp_connect(pp.connect_host, pp.connect_port);
 			} else {
-				//do_use_fd(events[n].data.fd);
+				printf("Got data from %d to %d\n",ev_data->src_fd, ev_data->dst_fd);
 				char message[MAX_BUFFER];
 				bzero(message, MAX_BUFFER);
 				int rec_length = 0;
-				while((rec_length = recv(events[n].data.fd, message, MAX_BUFFER, 0)) > 0){
-					printf("Destination port: %ui\n", events[n].data.u32);
-					send(events[n].data.u32, message, rec_length, 0);
+				while((rec_length = recv(ev_data->src_fd, message, MAX_BUFFER, 0)) > 0){
+					printf("Destination[%d] \n", rec_length); 
+					send(ev_data->dst_fd, message, rec_length, 0);
 					fflush(stdout);
-				}
+				} /*
 				if(events[n].events == EPOLLRDHUP){
 					close(events[n].data.fd);
 					close(events[n].data.u32);
-				}
+				}*/
 			}
 		}
 	}
