@@ -9,6 +9,10 @@ typedef struct proxy_params {
 	uint8_t tls_enabled;
 } proxy_params;
 
+/* 
+ * Struct to store the source and destination file descriptors for 
+ * proxied connections.
+ */
 typedef struct ep_data {
 	int src_fd;
 	int dst_fd;

@@ -17,7 +17,7 @@
 
 static const int CONNECTION_BACKLOG = 1000;
 static const int MAX_EVENTS = 10;
-static const int MAX_BUFFER = 1024;
+static const int MAX_BUFFER = 2 * 1024;
 
 int main(int argc, char * argv[]) {
 	int listen_fd = -1;
@@ -66,18 +66,13 @@ int main(int argc, char * argv[]) {
 	((ep_data *) ev.data.ptr)->dst_fd = 0;
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_fd, &ev);
 
-	/** Process Connections **/
-
-
-	/** Open / reuse connection **/
-
 
 	for (;;) {
 		int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
 
 		for (int n = 0; n < nfds; ++n) {
 			ep_data * ev_data = events[n].data.ptr;
-			printf("Epoll[%d] triggering fd %d\n", n, events[n].data.fd);
+			printf("Epoll[%d] triggering fd %d\n", n, ev_data->src_fd);
 			if (ev_data->src_fd == listen_fd) {
 				printf("Got new connection\n");
 				client_addr_len = sizeof(client_addr);
@@ -95,19 +90,27 @@ int main(int argc, char * argv[]) {
 				printf("src connection fd: %d, dest connection fd: %d\n", ((ep_data *) ev.data.ptr)->src_fd, ((ep_data *) ev.data.ptr)->dst_fd);
 				epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,&ev);
 			} else {
-				printf("Got data from %d to %d\n",ev_data->src_fd, ev_data->dst_fd);
 				char message[MAX_BUFFER];
 				bzero(message, MAX_BUFFER);
 				int rec_length = 0;
-				while((rec_length = recv(ev_data->src_fd, message, MAX_BUFFER, 0)) > 0){
-					printf("Destination[%d] \n", rec_length); 
+				/*
+ 				 * Close source and dest if there is an error
+ 				 * or a 0 length read.
+ 				 */
+				if ((events[n].events & EPOLLERR) 
+					|| (events[n].events & EPOLLHUP) 
+					|| (events[n].events & EPOLLRDHUP) 
+					|| (!(events[n].events & EPOLLIN))
+					|| ((rec_length = recv(ev_data->src_fd, message, MAX_BUFFER, 0)) == 0))
+				{
+					printf("Closing fds src[%d], dst[%d]\n", ev_data->src_fd,ev_data->dst_fd);
+					close(ev_data->src_fd);
+					close(ev_data->dst_fd);
+					free(ev_data);
+				} else {
+					printf("Got [%d] bytes from %d to %d\n",rec_length,ev_data->src_fd, ev_data->dst_fd);
 					send(ev_data->dst_fd, message, rec_length, 0);
-					fflush(stdout);
-				} /*
-				if(events[n].events == EPOLLRDHUP){
-					close(events[n].data.fd);
-					close(events[n].data.u32);
-				}*/
+				}
 			}
 		}
 	}
