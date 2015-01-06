@@ -11,6 +11,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <gnutls/gnutls.h>
 #include "proxy_common.h"
 
 #define CONNECTION_BACKLOG 1000
@@ -115,16 +116,83 @@ int tcp_listen(int port)
 	return listen_fd;
 }
 
-int epoll_add(int epollfd, int srcfd, int dstfd)
+int epoll_add(int epollfd, ep_data * evp)
 {
 	struct epoll_event ev;
 
 	memset(&ev, '\0', sizeof(ev));
 	ev.events = EPOLLIN | EPOLLRDHUP;
 	ev.data.ptr = malloc(sizeof(ep_data));
-	((ep_data *) ev.data.ptr)->src_fd = srcfd;
-	((ep_data *) ev.data.ptr)->dst_fd = dstfd;
-	epoll_ctl(epollfd, EPOLL_CTL_ADD, srcfd, &ev);
+	((ep_data *) ev.data.ptr)->src_fd = evp->src_fd;
+	((ep_data *) ev.data.ptr)->src_enc = evp->src_enc;
+	((ep_data *) ev.data.ptr)->dst_fd = evp->dst_fd;
+	((ep_data *) ev.data.ptr)->dst_enc = evp->dst_enc;
+	((ep_data *) ev.data.ptr)->session = evp->session;
+	epoll_ctl(epollfd, EPOLL_CTL_ADD, evp->src_fd, &ev);
 	return 0;
 }
+
+
+/* This function will verify the peer's certificate, and check
+ * if the hostname matches, as well as the activation, expiration dates.
+ */
+#if 0
+static int _verify_certificate_callback(gnutls_session_t session)
+{
+        unsigned int status;
+        int ret, type;
+        const char *hostname;
+        gnutls_datum_t out;
+
+        /* read hostname */
+        hostname = gnutls_session_get_ptr(session);
+
+        /* This verification function uses the trusted CAs in the credentials
+         * structure. So you must have installed one or more CA certificates.
+         */
+
+         /* The following demonstrate two different verification functions,
+          * the more flexible gnutls_certificate_verify_peers(), as well
+          * as the old gnutls_certificate_verify_peers3(). */
+        {
+        gnutls_typed_vdata_st data[2];
+
+        memset(data, 0, sizeof(data));
+
+        data[0].type = GNUTLS_DT_DNS_HOSTNAME;
+        data[0].data = (void*)hostname;
+
+        data[1].type = GNUTLS_DT_KEY_PURPOSE_OID;
+        data[1].data = (void*)GNUTLS_KP_TLS_WWW_SERVER;
+
+        ret = gnutls_certificate_verify_peers(session, data, 2,
+					      &status);
+        }
+
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        type = gnutls_certificate_type_get(session);
+
+        ret =
+            gnutls_certificate_verification_status_print(status, type,
+                                                         &out, 0);
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        printf("%s", out.data);
+
+        gnutls_free(out.data);
+
+        if (status != 0)        /* Certificate is not trusted */
+                return GNUTLS_E_CERTIFICATE_ERROR;
+
+        /* notify gnutls to continue handshake normally */
+        return 0;
+}
+#endif
 #endif /* proxy_common.c */

@@ -15,7 +15,10 @@ typedef struct proxy_params {
  */
 typedef struct ep_data {
 	int src_fd;
+	uint8_t src_enc;
 	int dst_fd;
+	uint8_t dst_enc;
+	gnutls_session_t * session;
 } ep_data;
 
 /*****************************************************************************/
@@ -35,5 +38,6 @@ const char * parse_cmd_options(int argc, char * argv[], proxy_params * pp);
  */
 int tcp_listen(int port);
 
-int epoll_add(int epoll_fd, int src_port, int dst_port);
+int epoll_add(int epollfd, ep_data * evp);
+
 #endif /* proxy_common.h */
