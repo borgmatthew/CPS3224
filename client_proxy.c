@@ -96,24 +96,26 @@ int main(int argc, char * argv[]) {
 
 	/******************************* Init ********************************/
 
-	/* for backwards compatibility with gnutls < 3.3.0 */
-	gnutls_global_init();
-	/* X509 stuff */
-        gnutls_certificate_allocate_credentials(&xcred);
+	if(pp.tls_enabled){
+		/* for backwards compatibility with gnutls < 3.3.0 */
+		gnutls_global_init();
+		/* X509 stuff */
+        	gnutls_certificate_allocate_credentials(&xcred);
+	
+        	/* Use the OS trusted ca's file */
+		gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
+		//gnutls_certificate_set_x509_system_trust(xcred);
+        	gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
 
-        /* Use the OS trusted ca's file */
-	gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
-	//gnutls_certificate_set_x509_system_trust(xcred);
-        gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
+		/* add certificate key pair */
+		int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", 			GNUTLS_X509_FMT_PEM);
 
-	/* add certificate key pair */
-	int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", GNUTLS_X509_FMT_PEM);
+		if (cert_pair < 0) {
+         	       printf("No certificate or key were found\n");
+         	       exit(1);
+        	}
 
-	if (cert_pair < 0) {
-                printf("No certificate or key were found\n");
-                exit(1);
-        }
-
+	}
 
 	ep_data ev;
 	epollfd = epoll_create(MAX_EVENTS);
@@ -148,37 +150,38 @@ int main(int argc, char * argv[]) {
 				int dstfd = tcp_connect(pp.connect_host, pp.connect_port);
 				int ret = 0;
 				if(dstfd > 0) {
-					ev.session = malloc(sizeof(gnutls_session_t));
-					gnutls_init(ev.session, GNUTLS_CLIENT);
+					if(pp.tls_enabled){					
+						ev.session = malloc(sizeof(gnutls_session_t));
+						gnutls_init(ev.session, GNUTLS_CLIENT);
 					
-					/* set name of server */
-					char host_name[] = "localhost";
-					gnutls_session_set_ptr(* ev.session, (void *) &host_name);
+						/* set name of server */
+						char host_name[] = "localhost";
+						gnutls_session_set_ptr(* ev.session, (void *) &host_name);
 
-				        /* use default priorities */
-				        gnutls_set_default_priority(* ev.session);
+					        /* use default priorities */
+					        gnutls_set_default_priority(* ev.session);
 
-					/* put the x509 credentials to the current session */
-				        gnutls_credentials_set(* ev.session, GNUTLS_CRD_CERTIFICATE, xcred);
+						/* put the x509 credentials to the current session */
+					        gnutls_credentials_set(* ev.session, GNUTLS_CRD_CERTIFICATE, xcred);
 
-					gnutls_transport_set_int(* ev.session, dstfd);
-					gnutls_handshake_set_timeout(* ev.session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
-					/* Perform the TLS handshake */
-					do {
-						ret = gnutls_handshake(* ev.session);
+						gnutls_transport_set_int(* ev.session, dstfd);
+						gnutls_handshake_set_timeout(* ev.session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+						/* Perform the TLS handshake */
+						do {
+							ret = gnutls_handshake(* ev.session);
+						}
+						while (ret < 0 && gnutls_error_is_fatal(ret) == 0);
+						if (ret < 0) {
+							fprintf(stderr, "*** Handshake failed\n");
+							gnutls_perror(ret);
+							exit(1);
+						} else {
+							char *desc;
+							desc = gnutls_session_get_desc(* ev.session);
+							printf("- Session info: %s\n", desc);
+							gnutls_free(desc);
+						}
 					}
-					while (ret < 0 && gnutls_error_is_fatal(ret) == 0);
-					if (ret < 0) {
-						fprintf(stderr, "*** Handshake failed\n");
-						gnutls_perror(ret);
-						exit(1);
-					} else {
-						char *desc;
-						desc = gnutls_session_get_desc(* ev.session);
-						printf("- Session info: %s\n", desc);
-						gnutls_free(desc);
-					}
-
 					fcntl(dstfd,F_SETFL,x | O_NONBLOCK);
 					ev.src_fd = conn_sock;
 					ev.src_enc = 0;

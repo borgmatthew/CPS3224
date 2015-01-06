@@ -96,24 +96,25 @@ int main(int argc, char * argv[]) {
 
 	/******************************* Init ********************************/
 
-	/* for backwards compatibility with gnutls < 3.3.0 */
-	gnutls_global_init();
-	/* X509 stuff */
-        gnutls_certificate_allocate_credentials(&xcred);
+	if(pp.tls_enabled){
+		/* for backwards compatibility with gnutls < 3.3.0 */
+		gnutls_global_init();
+		/* X509 stuff */
+        	gnutls_certificate_allocate_credentials(&xcred);
 
-        /* Use the OS trusted ca's file */
-	gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
-	//gnutls_certificate_set_x509_system_trust(xcred);
-        gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
+        	/* Use the OS trusted ca's file */
+		gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
+		//gnutls_certificate_set_x509_system_trust(xcred);
+        	gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
 
-	/* set key and certificate for server */
-	int cert_pair = gnutls_certificate_set_x509_key_file(xcred, "/home/matthew/localhost_cert.cert", "/home/matthew/localhost_key.key", GNUTLS_X509_FMT_PEM);
+		/* set key and certificate for server */
+		int cert_pair = gnutls_certificate_set_x509_key_file(xcred, "/home/matthew/localhost_cert.cert", "/home/matthew/localhost_key.key", 			GNUTLS_X509_FMT_PEM);
 
-	if (cert_pair < 0) {
-                printf("No certificate or key were found\n");
-                exit(1);
-        }
-
+		if (cert_pair < 0) {
+        	        printf("No certificate or key were found\n");
+                	exit(1);
+        	}
+	}
 
 	ep_data ev;
 	epollfd = epoll_create(MAX_EVENTS);
@@ -143,46 +144,48 @@ int main(int argc, char * argv[]) {
 				int conn_sock = accept(listen_fd, (struct sockaddr *) &client_addr, &client_addr_len);
 				int x=fcntl(conn_sock,F_GETFL,0);
 
-				/* allocate space for session */
-				ev.session = malloc(sizeof(gnutls_session_t));
+				if(pp.tls_enabled){
+					/* allocate space for session */
+					ev.session = malloc(sizeof(gnutls_session_t));
 
-				/* set non blocking */
-				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK);
+					/* set non blocking */
+					fcntl(conn_sock,F_SETFL,x | O_NONBLOCK);
 
-				/* set up params for handshake */
-				gnutls_init(ev.session, GNUTLS_SERVER);
+					/* set up params for handshake */
+					gnutls_init(ev.session, GNUTLS_SERVER);
 					
-				/* set name of client */
-				char host_name[] = "localhost";
-				gnutls_session_set_ptr(* ev.session, (void *) &host_name);
+					/* set name of client */
+					char host_name[] = "localhost";
+					gnutls_session_set_ptr(* ev.session, (void *) &host_name);
 
-				/* use default priorities */
-				gnutls_set_default_priority(* ev.session);
+					/* use default priorities */
+					gnutls_set_default_priority(* ev.session);
 
-				/* put the x509 credentials to the current session */
-				gnutls_credentials_set(* ev.session, GNUTLS_CRD_CERTIFICATE, xcred);
+					/* put the x509 credentials to the current session */
+					gnutls_credentials_set(* ev.session, GNUTLS_CRD_CERTIFICATE, xcred);
 
-				/* request certificate from client */
-				gnutls_certificate_server_set_request (* ev.session, GNUTLS_CERT_REQUIRE);
+					/* request certificate from client */
+					gnutls_certificate_server_set_request (* ev.session, GNUTLS_CERT_REQUIRE);
 				
-				gnutls_transport_set_int(* ev.session, conn_sock);
-				gnutls_handshake_set_timeout(* ev.session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+					gnutls_transport_set_int(* ev.session, conn_sock);
+					gnutls_handshake_set_timeout(* ev.session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
 
-				/* Perform the TLS handshake */
-				int ret = 0;
-				do {
-					ret = gnutls_handshake(* ev.session);
-				}
-				while (ret < 0 && gnutls_error_is_fatal(ret) == 0);
-				if (ret < 0) {
-					fprintf(stderr, "*** Handshake failed\n");
-					gnutls_perror(ret);
-					exit(1);
-				} else {
-					char *desc;
-					desc = gnutls_session_get_desc(* ev.session);
-					printf("- Session info: %s\n", desc);
-					gnutls_free(desc);
+					/* Perform the TLS handshake */
+					int ret = 0;
+					do {
+						ret = gnutls_handshake(* ev.session);
+					}
+					while (ret < 0 && gnutls_error_is_fatal(ret) == 0);
+					if (ret < 0) {
+						fprintf(stderr, "*** Handshake failed\n");
+						gnutls_perror(ret);
+						exit(1);
+					} else {
+						char *desc;
+						desc = gnutls_session_get_desc(* ev.session);
+						printf("- Session info: %s\n", desc);
+						gnutls_free(desc);
+					}
 				}
 
 				int dstfd = tcp_connect(pp.connect_host, pp.connect_port);
