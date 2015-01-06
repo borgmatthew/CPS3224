@@ -9,27 +9,80 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/x509.h>
 #include <strings.h>
 #include <sys/epoll.h>
 
 #include "proxy_common.h"
 #include "connection_common.h"
 
-static const int CONNECTION_BACKLOG = 1000;
 static const int MAX_EVENTS = 10;
-static const int MAX_BUFFER = 1024;
+static const int MAX_BUFFER = 2 * 1024;
+
+static int _verify_certificate_callback(gnutls_session_t session)
+{
+        unsigned int status;
+        int ret, type;
+        char * hostname;
+	void *purpose = &GNUTLS_KP_TLS_WWW_CLIENT;
+        gnutls_datum_t out;
+
+        /* read hostname */
+        hostname = gnutls_session_get_ptr(session);
+
+        /* This verification function uses the trusted CAs in the credentials
+         * structure. So you must have installed one or more CA certificates.
+         */
+
+        gnutls_typed_vdata_st data[2];
+
+        memset(data, 0, sizeof(data));
+
+        data[0].type = GNUTLS_DT_DNS_HOSTNAME;
+        data[0].data = (void*)hostname;
+
+        data[1].type = GNUTLS_DT_KEY_PURPOSE_OID;
+        data[1].data = purpose;
+
+        ret = gnutls_certificate_verify_peers(session, data, 2, &status);
+
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        type = gnutls_certificate_type_get(session);
+
+        ret = gnutls_certificate_verification_status_print(status, type, &out, 0);
+
+	printf("Status after certificate verification status print: %i\n", status); 
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        printf("%s", out.data);
+
+        gnutls_free(out.data);
+
+        if (status != 0)        /* Certificate is not trusted */
+                return GNUTLS_E_CERTIFICATE_ERROR;
+
+        /* notify gnutls to continue handshake normally */
+        return 0;
+}
 
 int main(int argc, char * argv[]) {
 	int listen_fd = -1;
 	proxy_params pp;
-	struct sockaddr_in listen_addr, client_addr;
+	struct sockaddr_in client_addr;
 	socklen_t client_addr_len;
-
-
-	struct epoll_event ev, events[MAX_EVENTS];
+	struct epoll_event events[MAX_EVENTS];
 	int epollfd = -1;
 
-	/** Get params **/
+	gnutls_certificate_credentials_t xcred;
+
+	/************************** Get Params *******************************/
 
 	const char * parse_error = parse_cmd_options(argc, argv, &pp);
 	if(parse_error != NULL) {
@@ -38,72 +91,150 @@ int main(int argc, char * argv[]) {
 		exit(-1);
 	}
 
-	printf("%d, %s, %d, %d\n",pp.listen_port, pp.connect_host, pp.connect_port, pp.tls_enabled);
+	printf("listen_port: [%d], connect_host: [%s], connect_port: [%d], tls_enabled: [%d]\n",
+		pp.listen_port, pp.connect_host, pp.connect_port, pp.tls_enabled);
 
-	/** Init **/
+	/******************************* Init ********************************/
 
 	/* for backwards compatibility with gnutls < 3.3.0 */
 	gnutls_global_init();
+	/* X509 stuff */
+        gnutls_certificate_allocate_credentials(&xcred);
 
+        /* Use the OS trusted ca's file */
+	gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
+	//gnutls_certificate_set_x509_system_trust(xcred);
+        gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
+
+	/* set key and certificate for server */
+	int cert_pair = gnutls_certificate_set_x509_key_file(xcred, "/home/matthew/localhost_cert.cert", "/home/matthew/localhost_key.key", GNUTLS_X509_FMT_PEM);
+
+	if (cert_pair < 0) {
+                printf("No certificate or key were found\n");
+                exit(1);
+        }
+
+
+	ep_data ev;
 	epollfd = epoll_create(MAX_EVENTS);
+	listen_fd = tcp_listen(pp.listen_port);
+	ev.src_fd = listen_fd;
+	ev.src_enc = 0;
+	ev.dst_fd = 0;
+	ev.dst_enc = 0;
+	ev.session = NULL;
+	epoll_add(epollfd, &ev);
 
 
-	/** Setup Ports **/
-	listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-	memset(&listen_addr, '\0', sizeof(listen_addr));
-	listen_addr.sin_family = AF_INET;
-	listen_addr.sin_port = htons(pp.listen_port);
-	listen_addr.sin_addr.s_addr = INADDR_ANY;
-	bind(listen_fd, (struct sockaddr *) &listen_addr, sizeof(listen_addr));
-	listen(listen_fd, CONNECTION_BACKLOG);
-
-
-	ev.events = EPOLLIN;
-	ev.data.fd = listen_fd;
-	epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_fd, &ev);
-
-	/** Process Connections **/
-
-
-	/** Open / reuse connection **/
-
+	/*************************** Event loop ******************************/
 
 	for (;;) {
 		int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
 
 		for (int n = 0; n < nfds; ++n) {
-			if (events[n].data.fd == listen_fd) {
+			ep_data * ev_data = events[n].data.ptr;
+			printf("Epoll[%d] triggering fd %d\n", n, ev_data->src_fd);
+			if (ev_data->src_fd == listen_fd) {
+				memset(&ev, '\0', sizeof(ep_data));
+
+				printf("Got new connection\n");
 				client_addr_len = sizeof(client_addr);
 				memset(&client_addr, '\0', client_addr_len );
 				int conn_sock = accept(listen_fd, (struct sockaddr *) &client_addr, &client_addr_len);
 				int x=fcntl(conn_sock,F_GETFL,0);
-				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK);
-				//setnonblocking(conn_sock);
-				ev.events = EPOLLIN;
-				ev.data.fd = conn_sock;
-				epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,&ev);
 
-				// Open destination connection
-				printf("opening connection\n");
-				events[n].data.u32 = tcp_connect(pp.connect_host, pp.connect_port);
+				/* allocate space for session */
+				ev.session = malloc(sizeof(gnutls_session_t));
+
+				/* set non blocking */
+				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK);
+
+				/* set up params for handshake */
+				gnutls_init(ev.session, GNUTLS_SERVER);
+					
+				/* set name of client */
+				char host_name[] = "localhost";
+				gnutls_session_set_ptr(* ev.session, (void *) &host_name);
+
+				/* use default priorities */
+				gnutls_set_default_priority(* ev.session);
+
+				/* put the x509 credentials to the current session */
+				gnutls_credentials_set(* ev.session, GNUTLS_CRD_CERTIFICATE, xcred);
+
+				/* request certificate from client */
+				gnutls_certificate_server_set_request (* ev.session, GNUTLS_CERT_REQUIRE);
+				
+				gnutls_transport_set_int(* ev.session, conn_sock);
+				gnutls_handshake_set_timeout(* ev.session, GNUTLS_DEFAULT_HANDSHAKE_TIMEOUT);
+
+				/* Perform the TLS handshake */
+				int ret = 0;
+				do {
+					ret = gnutls_handshake(* ev.session);
+				}
+				while (ret < 0 && gnutls_error_is_fatal(ret) == 0);
+				if (ret < 0) {
+					fprintf(stderr, "*** Handshake failed\n");
+					gnutls_perror(ret);
+					exit(1);
+				} else {
+					char *desc;
+					desc = gnutls_session_get_desc(* ev.session);
+					printf("- Session info: %s\n", desc);
+					gnutls_free(desc);
+				}
+
+				int dstfd = tcp_connect(pp.connect_host, pp.connect_port);
+				
+				if(dstfd > 0) {
+					fcntl(dstfd,F_SETFL,x | O_NONBLOCK);
+					ev.src_fd = conn_sock;
+					ev.src_enc = 1;
+					ev.dst_fd = dstfd;
+					ev.dst_enc = 0;
+					epoll_add(epollfd, &ev);
+
+					ev.src_fd = dstfd;
+					ev.src_enc = 0;
+					ev.dst_fd = conn_sock;
+					ev.dst_enc = 1;
+					epoll_add(epollfd, &ev);
+					printf("src connection fd: %d, dest connection fd: %d\n", conn_sock, dstfd);
+				} else {
+					close(conn_sock);
+				}
 			} else {
-				printf("Receiving\n");
-				//do_use_fd(events[n].data.fd);
-				char message[MAX_BUFFER];
+				char message[MAX_BUFFER + 1];
 				bzero(message, MAX_BUFFER);
 				int rec_length = 0;
-				while((rec_length = recv(events[n].data.fd, message, MAX_BUFFER, 0)) > 0){
-					printf("%s, %i\n nfds:%i\ntest:%i", message, rec_length, nfds, events[n].data.u32);
-					fflush(stdout);
-				}
-				if(events[n].events == EPOLLRDHUP){
-					close(events[n].data.fd);
-					close(events[n].data.u32);
+				/*
+ 				 * Close source and dest if there is an error
+ 				 * or a 0 length read.
+ 				 */
+				if ((events[n].events & EPOLLERR) 
+					|| (events[n].events & EPOLLHUP) 
+					|| (events[n].events & EPOLLRDHUP) 
+					|| (!(events[n].events & EPOLLIN))
+					|| (ev_data->src_enc && (rec_length = gnutls_record_recv(* ev_data->session, message, MAX_BUFFER)) == 0)
+					|| (!(ev_data->src_enc) && (rec_length = recv(ev_data->src_fd, message, MAX_BUFFER, 0)) == 0)
+				)
+				{
+					printf("Closing fds src[%d], dst[%d]\n", ev_data->src_fd,ev_data->dst_fd);
+					if(ev_data->session != NULL) gnutls_deinit(* ev_data->session);
+					close(ev_data->src_fd);
+					close(ev_data->dst_fd);
+					free(ev_data);
+				} else {
+					printf("Got [%d] bytes from %d [%d] to %d [%d]\n[%s]\n",rec_length,ev_data->src_fd, ev_data->src_enc, ev_data->dst_fd, ev_data->dst_enc,message);
+					/** encrypt and send **/
+					if(ev_data->dst_enc) {
+						gnutls_record_send(* ev_data->session, message, rec_length);
+					} else {
+						send(ev_data->dst_fd, message, rec_length, 0);
+					}
 				}
 			}
 		}
 	}
-
-	/** encrypt and send **/
 }

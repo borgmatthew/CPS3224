@@ -107,12 +107,12 @@ int main(int argc, char * argv[]) {
         gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
 
 	/* add certificate key pair */
-	/*int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", GNUTLS_X509_FMT_PEM);
+	int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", GNUTLS_X509_FMT_PEM);
 
 	if (cert_pair < 0) {
                 printf("No certificate or key were found\n");
                 exit(1);
-        }*/
+        }
 
 
 	ep_data ev;
@@ -171,6 +171,7 @@ int main(int argc, char * argv[]) {
 					if (ret < 0) {
 						fprintf(stderr, "*** Handshake failed\n");
 						gnutls_perror(ret);
+						exit(1);
 					} else {
 						char *desc;
 						desc = gnutls_session_get_desc(* ev.session);
