@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <gnutls/gnutls.h>
+#include <gnutls/x509.h>
 #include <strings.h>
 #include <sys/epoll.h>
 
@@ -17,6 +18,59 @@
 
 static const int MAX_EVENTS = 10;
 static const int MAX_BUFFER = 2 * 1024;
+
+static int _verify_certificate_callback(gnutls_session_t session)
+{
+        unsigned int status;
+        int ret, type;
+        char * hostname;
+	void *purpose = &GNUTLS_KP_TLS_WWW_SERVER;
+        gnutls_datum_t out;
+
+        /* read hostname */
+        hostname = gnutls_session_get_ptr(session);
+
+        /* This verification function uses the trusted CAs in the credentials
+         * structure. So you must have installed one or more CA certificates.
+         */
+
+        gnutls_typed_vdata_st data[2];
+
+        memset(data, 0, sizeof(data));
+
+        data[0].type = GNUTLS_DT_DNS_HOSTNAME;
+        data[0].data = (void*)hostname;
+
+        data[1].type = GNUTLS_DT_KEY_PURPOSE_OID;
+        data[1].data = purpose;
+
+        ret = gnutls_certificate_verify_peers(session, data, 2, &status);
+
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        type = gnutls_certificate_type_get(session);
+
+        ret = gnutls_certificate_verification_status_print(status, type, &out, 0);
+
+	printf("Status after certificate verification status print: %i\n", status); 
+        if (ret < 0) {
+                printf("Error\n");
+                return GNUTLS_E_CERTIFICATE_ERROR;
+        }
+
+        printf("%s", out.data);
+
+        gnutls_free(out.data);
+
+        if (status != 0)        /* Certificate is not trusted */
+                return GNUTLS_E_CERTIFICATE_ERROR;
+
+        /* notify gnutls to continue handshake normally */
+        return 0;
+}
 
 int main(int argc, char * argv[]) {
 	int listen_fd = -1;
@@ -48,9 +102,17 @@ int main(int argc, char * argv[]) {
         gnutls_certificate_allocate_credentials(&xcred);
 
         /* Use the OS trusted ca's file */
-        gnutls_certificate_set_x509_system_trust(xcred);
-        /*gnutls_certificate_set_verify_function(xcred,
-                                              _verify_certificate_callback);*/
+	gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
+	//gnutls_certificate_set_x509_system_trust(xcred);
+        gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
+
+	/* add certificate key pair */
+	/*int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", GNUTLS_X509_FMT_PEM);
+
+	if (cert_pair < 0) {
+                printf("No certificate or key were found\n");
+                exit(1);
+        }*/
 
 
 	ep_data ev;
@@ -88,6 +150,10 @@ int main(int argc, char * argv[]) {
 				if(dstfd > 0) {
 					ev.session = malloc(sizeof(gnutls_session_t));
 					gnutls_init(ev.session, GNUTLS_CLIENT);
+					
+					/* set name of server */
+					char host_name[] = "localhost";
+					gnutls_session_set_ptr(* ev.session, (void *) &host_name);
 
 				        /* use default priorities */
 				        gnutls_set_default_priority(* ev.session);
