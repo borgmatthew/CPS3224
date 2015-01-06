@@ -183,11 +183,11 @@ int main(int argc, char * argv[]) {
 					ev.src_fd = conn_sock;
 					ev.src_enc = 0;
 					ev.dst_fd = dstfd;
-					ev.dst_enc = 1;
+					if(pp.tls_enabled){ ev.dst_enc = 1; } else { ev.dst_enc = 0; }
 					epoll_add(epollfd, &ev);
 
 					ev.src_fd = dstfd;
-					ev.src_enc = 1;
+					if(pp.tls_enabled){ ev.src_enc = 1; } else{ ev.src_enc = 0;}
 					ev.dst_fd = conn_sock;
 					ev.dst_enc = 0;
 					epoll_add(epollfd, &ev);
