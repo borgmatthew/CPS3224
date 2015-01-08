@@ -12,6 +12,7 @@
 #include <gnutls/x509.h>
 #include <strings.h>
 #include <sys/epoll.h>
+#include <netdb.h>
 
 #include "proxy_common.h"
 #include "connection_common.h"
@@ -55,7 +56,6 @@ static int _verify_certificate_callback(gnutls_session_t session)
 
         ret = gnutls_certificate_verification_status_print(status, type, &out, 0);
 
-	printf("Status after certificate verification status print: %i\n", status); 
         if (ret < 0) {
                 printf("Error\n");
                 return GNUTLS_E_CERTIFICATE_ERROR;
@@ -103,12 +103,11 @@ int main(int argc, char * argv[]) {
         	gnutls_certificate_allocate_credentials(&xcred);
 	
         	/* Use the OS trusted ca's file */
-		gnutls_certificate_set_x509_trust_file (xcred, "/etc/ssl/certs/ca_cert.cert", GNUTLS_X509_FMT_PEM);       
-		//gnutls_certificate_set_x509_system_trust(xcred);
+		gnutls_certificate_set_x509_trust_file (xcred, "ca_cert.cert", GNUTLS_X509_FMT_PEM);       
         	gnutls_certificate_set_verify_function(xcred, _verify_certificate_callback);
 
 		/* add certificate key pair */
-		int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "/home/matthew/client_cert.cert", "/home/matthew/client_key.key", 			GNUTLS_X509_FMT_PEM);
+		int cert_pair = gnutls_certificate_set_x509_key_file (xcred, "client_cert.cert", "client_key.key", GNUTLS_X509_FMT_PEM);
 
 		if (cert_pair < 0) {
          	       printf("No certificate or key were found\n");
@@ -116,6 +115,12 @@ int main(int argc, char * argv[]) {
         	}
 
 	}
+
+	/* get host details */
+	struct hostent * host;
+	host = gethostbyname(pp.connect_host);
+	struct in_addr **addr_list = (struct in_addr **)host->h_addr_list;
+	char * dest_ip = inet_ntoa(*addr_list[0]);
 
 	ep_data ev;
 	epollfd = epoll_create(MAX_EVENTS);
@@ -135,11 +140,9 @@ int main(int argc, char * argv[]) {
 
 		for (int n = 0; n < nfds; ++n) {
 			ep_data * ev_data = events[n].data.ptr;
-			printf("Epoll[%d] triggering fd %d\n", n, ev_data->src_fd);
 			if (ev_data->src_fd == listen_fd) {
 				memset(&ev, '\0', sizeof(ep_data));
 
-				printf("Got new connection\n");
 				client_addr_len = sizeof(client_addr);
 				memset(&client_addr, '\0', client_addr_len );
 				int conn_sock = accept(listen_fd, (struct sockaddr *) &client_addr, &client_addr_len);
@@ -147,16 +150,18 @@ int main(int argc, char * argv[]) {
 				/* set non blocking */
 				fcntl(conn_sock,F_SETFL,x | O_NONBLOCK); 
 
-				int dstfd = tcp_connect(pp.connect_host, pp.connect_port);
+				int dstfd = tcp_connect(dest_ip, pp.connect_port);
 				int ret = 0;
 				if(dstfd > 0) {
+					int successfull_handshake = 1;
 					if(pp.tls_enabled){					
 						ev.session = malloc(sizeof(gnutls_session_t));
+
+						/* Initialize session */						
 						gnutls_init(ev.session, GNUTLS_CLIENT);
 					
 						/* set name of server */
-						char host_name[] = "localhost";
-						gnutls_session_set_ptr(* ev.session, (void *) &host_name);
+						gnutls_session_set_ptr(* ev.session, (void *) host->h_name);
 
 					        /* use default priorities */
 					        gnutls_set_default_priority(* ev.session);
@@ -174,7 +179,11 @@ int main(int argc, char * argv[]) {
 						if (ret < 0) {
 							fprintf(stderr, "*** Handshake failed\n");
 							gnutls_perror(ret);
-							exit(1);
+							if(ev_data->session != NULL) gnutls_deinit(* ev_data->session);
+							close(ev_data->src_fd);
+							close(ev_data->dst_fd);
+							free(ev_data);
+							successfull_handshake = 0;
 						} else {
 							char *desc;
 							desc = gnutls_session_get_desc(* ev.session);
@@ -182,19 +191,21 @@ int main(int argc, char * argv[]) {
 							gnutls_free(desc);
 						}
 					}
-					fcntl(dstfd,F_SETFL,x | O_NONBLOCK);
-					ev.src_fd = conn_sock;
-					ev.src_enc = 0;
-					ev.dst_fd = dstfd;
-					if(pp.tls_enabled){ ev.dst_enc = 1; } else { ev.dst_enc = 0; }
-					epoll_add(epollfd, &ev);
-
-					ev.src_fd = dstfd;
-					if(pp.tls_enabled){ ev.src_enc = 1; } else{ ev.src_enc = 0;}
-					ev.dst_fd = conn_sock;
-					ev.dst_enc = 0;
-					epoll_add(epollfd, &ev);
-					printf("src connection fd: %d, dest connection fd: %d\n", conn_sock, dstfd);
+					
+					if(successfull_handshake){
+						fcntl(dstfd,F_SETFL,x | O_NONBLOCK);
+						ev.src_fd = conn_sock;
+						ev.src_enc = 0;
+						ev.dst_fd = dstfd;
+						if(pp.tls_enabled){ ev.dst_enc = 1; } else { ev.dst_enc = 0; }
+						epoll_add(epollfd, &ev);
+	
+						ev.src_fd = dstfd;
+						if(pp.tls_enabled){ ev.src_enc = 1; } else{ ev.src_enc = 0;}
+						ev.dst_fd = conn_sock;
+						ev.dst_enc = 0;
+						epoll_add(epollfd, &ev);
+					}
 				} else {
 					close(conn_sock);
 				}
@@ -214,13 +225,11 @@ int main(int argc, char * argv[]) {
 					|| (!(ev_data->src_enc) && (rec_length = recv(ev_data->src_fd, message, MAX_BUFFER, 0)) == 0)
 				)
 				{
-					printf("Closing fds src[%d], dst[%d]\n", ev_data->src_fd,ev_data->dst_fd);
 					if(ev_data->session != NULL) gnutls_deinit(* ev_data->session);
 					close(ev_data->src_fd);
 					close(ev_data->dst_fd);
 					free(ev_data);
 				} else {
-					printf("Got [%d] bytes from %d [%d] to %d [%d]\n[%s]\n",rec_length,ev_data->src_fd, ev_data->src_enc, ev_data->dst_fd, ev_data->dst_enc,message);
 					/** encrypt and send **/
 					if(ev_data->dst_enc) {
 						gnutls_record_send(* ev_data->session, message, rec_length);

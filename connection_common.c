@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <string.h>
 #include "connection_common.h"
 
 int tcp_connect(const char *connect_host, uint16_t connect_port)
